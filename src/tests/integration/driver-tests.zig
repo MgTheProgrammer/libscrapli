@@ -2,8 +2,10 @@
 // note: disabling because tests can have unreachable blocks
 // note: disabling because of driver/file setup in tests and its fine
 const std = @import("std");
+const os = @import("builtin").os.tag;
 
 const scrapli = @import("scrapli");
+const auth = scrapli.auth;
 const cli = scrapli.cli;
 const operation = scrapli.cli_operation;
 const mode = scrapli.cli_mode;
@@ -214,6 +216,123 @@ test "driver open-cancellation" {
         &probe,
         operation.OpenOptions{},
     );
+}
+
+fn makeAuthFailureTestDriver(
+    record: bool,
+    fixture_path: []const u8,
+    auth_options: auth.Options,
+    extra_open_args: ?[]const u8,
+) !*cli.Driver {
+    const definition_path = "src/tests/fixtures/platform_nokia_srlinux_no_open_close_callbacks.yaml";
+
+    if (record) {
+        return cli.Driver.init(
+            std.testing.allocator,
+            std.testing.io,
+            if (os == .macos) "localhost" else "172.20.20.16",
+            .{
+                .definition = .{
+                    .file = definition_path,
+                },
+                .port = if (os == .macos) 21022 else 22,
+                .auth = auth_options,
+                .session = .{
+                    .record_destination = .{
+                        .f = fixture_path,
+                    },
+                },
+                .transport = .{
+                    .bin = .{
+                        .extra_open_args = extra_open_args,
+                    },
+                },
+            },
+        );
+    }
+
+    return cli.Driver.init(
+        std.testing.allocator,
+        std.testing.io,
+        "dummy",
+        .{
+            .definition = .{
+                .file = definition_path,
+            },
+            .port = 22,
+            .auth = auth_options,
+            .session = .{
+                .read_size = 1,
+            },
+            .transport = .{
+                .test_ = .{
+                    .f = fixture_path,
+                },
+            },
+        },
+    );
+}
+
+test "driver open-authentication-failure" {
+    const test_name = "driver-open-authentication-failure";
+
+    // srl's admin user has no authorized key, and the certificate is signed by a ca that srl
+    // does not trust (see fixtures readme), so key/certificate auth is rejected
+    const key_auth = auth.Options{
+        .username = "admin",
+        .private_key_path = "src/tests/fixtures/libscrapli_test_ssh_key",
+        .certificate_path = "src/tests/fixtures/libscrapli_test_ssh_key-cert.pub",
+    };
+
+    const cases = [_]struct {
+        name: []const u8,
+        auth: auth.Options,
+        extra_open_args: ?[]const u8 = null,
+    }{
+        .{
+            .name = "password-reprompted",
+            .auth = .{ .username = "admin", .password = "not-the-password" },
+        },
+        .{
+            // ssh falls back to password auth, but there is no password to send
+            .name = "key-rejected-password-prompted",
+            .auth = key_auth,
+        },
+        .{
+            // no other methods for ssh to fall back to, so it exits w/ permission denied
+            .name = "key-rejected-permission-denied",
+            .auth = key_auth,
+            .extra_open_args = "-o PreferredAuthentications=publickey",
+        },
+    };
+
+    for (cases) |case| {
+        errdefer {
+            std.debug.print("failed case: {s}\n", .{case.name});
+        }
+
+        const record = helper.isRecording();
+
+        const fixture_filename = try buildFixturePath(
+            std.testing.allocator,
+            test_name,
+            case.name,
+        );
+        defer std.testing.allocator.free(fixture_filename);
+
+        const d = try makeAuthFailureTestDriver(
+            record,
+            fixture_filename,
+            case.auth,
+            case.extra_open_args,
+        );
+        defer d.deinit();
+
+        try std.testing.expectError(
+            errors.ScrapliError.Authentication,
+            d.open(std.testing.allocator, .{}),
+        );
+    }
 }
 
 test "driver get-prompt" {

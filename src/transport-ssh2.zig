@@ -1180,13 +1180,14 @@ pub const Transport = struct {
                 return;
             }
 
-            try self.handleKeyboardInteractiveAuth(
+            // zlint-disable suppressed-errors -- failure falls through to the auth error below
+            self.handleKeyboardInteractiveAuth(
                 cancel,
                 start_time,
                 operation_timeout_ns,
                 session,
                 auth_options,
-            );
+            ) catch {};
 
             if (try self.isAuthenticated(
                 cancel,
@@ -1203,7 +1204,7 @@ pub const Transport = struct {
         self.last_error.set(last_error);
 
         return errors.wrapCriticalError(
-            errors.ScrapliError.Transport,
+            errors.ScrapliError.Authentication,
             @src(),
             self.log,
             last_error,

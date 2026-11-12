@@ -131,6 +131,7 @@ pub const FfiResult = enum(u8) {
     transport = 8,
     operation = 9,
     invalid_argument = 10,
+    authentication = 11,
 };
 
 /// Maps a Zig error to a stable FFI result code.
@@ -144,6 +145,7 @@ pub fn toFfiResult(err: anyerror) u8 {
         errors.ScrapliError.Session => FfiResult.session,
         errors.ScrapliError.Transport => FfiResult.transport,
         errors.ScrapliError.Operation => FfiResult.operation,
+        errors.ScrapliError.Authentication => FfiResult.authentication,
         else => FfiResult.unknown,
     };
 

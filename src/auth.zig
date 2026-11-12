@@ -419,41 +419,74 @@ pub fn processSearchableAuthBuf(
     return State._continue;
 }
 
-const open_error_message_substrings = [_][3][]const u8{
-    [3][]const u8{ "host key verification failed", "", "" },
-    [3][]const u8{ "no matching key exchange", "", "" },
-    [3][]const u8{ "no matching host key", "", "" },
-    [3][]const u8{ "no matching cipher", "", "" },
-    [3][]const u8{ "operation timed out", "", "" },
-    [3][]const u8{ "connection timed out", "", "" },
-    [3][]const u8{ "no route to host", "", "" },
-    [3][]const u8{ "bad configuration", "", "" },
-    [3][]const u8{ "could not resolve hostname", "", "" },
-    [3][]const u8{ "permission denied", "", "" },
-    [3][]const u8{ "unprotected private key file", "", "" },
-    [3][]const u8{ "too many authentication failures", "", "" },
-    [3][]const u8{ "connection refused", "", "" },
-    [3][]const u8{ "escape character is '^]'.", "are you telnet'ing to an ssh port?", "" },
-    [3][]const u8{ "ssh-2.0-openssh_", "are you telnet'ing to an ssh port?", "debug1:" },
+/// The kind of failure a known open error message indicates, when it is more specific than a
+/// generic open failure.
+pub const OpenErrorKind = enum {
+    // the remote end rejected our credentials
+    authentication,
+};
+
+const OpenErrorMessage = struct {
+    // substring to look for in the open output
+    substring: []const u8,
+    // message to report instead of the substring, if set
+    message: []const u8 = "",
+    // skip the match if this substring is also present, if set
+    ignore_if: []const u8 = "",
+    // the kind of failure the message indicates, if more specific than a generic open failure
+    kind: ?OpenErrorKind = null,
+};
+
+const open_error_messages = [_]OpenErrorMessage{
+    .{ .substring = "host key verification failed" },
+    .{ .substring = "no matching key exchange" },
+    .{ .substring = "no matching host key" },
+    .{ .substring = "no matching cipher" },
+    .{ .substring = "operation timed out" },
+    .{ .substring = "connection timed out" },
+    .{ .substring = "no route to host" },
+    .{ .substring = "bad configuration" },
+    .{ .substring = "could not resolve hostname" },
+    .{ .substring = "permission denied", .kind = .authentication },
+    .{ .substring = "unprotected private key file" },
+    .{ .substring = "too many authentication failures", .kind = .authentication },
+    .{ .substring = "connection refused" },
+    .{
+        .substring = "escape character is '^]'.",
+        .message = "are you telnet'ing to an ssh port?",
+    },
+    .{
+        .substring = "ssh-2.0-openssh_",
+        .message = "are you telnet'ing to an ssh port?",
+        .ignore_if = "debug1:",
+    },
+};
+
+/// A known error message found in the open output.
+pub const OpenMessage = struct {
+    message: []const u8,
+    kind: ?OpenErrorKind,
 };
 
 /// Checks the buf to see if any known error messages show up in the contents.
-pub fn openMessageHandler(buf: []const u8) !?[]const u8 {
-    for (open_error_message_substrings) |error_substring| {
-        if (std.ascii.findIgnoreCase(buf, error_substring[0]) != null) {
-            if (error_substring[2].len > 0 and std.ascii.findIgnoreCase(
+pub fn openMessageHandler(buf: []const u8) !?OpenMessage {
+    for (open_error_messages) |error_message| {
+        if (std.ascii.findIgnoreCase(buf, error_message.substring) != null) {
+            if (error_message.ignore_if.len > 0 and std.ascii.findIgnoreCase(
                 buf,
-                error_substring[2],
+                error_message.ignore_if,
             ) != null) {
                 // ignore substring in buf, continuing
                 continue;
             }
 
-            if (error_substring[1].len > 0) {
-                return error_substring[1];
-            }
-
-            return error_substring[0];
+            return OpenMessage{
+                .message = if (error_message.message.len > 0)
+                    error_message.message
+                else
+                    error_message.substring,
+                .kind = error_message.kind,
+            };
         }
     }
 
@@ -465,6 +498,7 @@ test "openMessageHandler" {
         name: []const u8,
         haystack: []const u8,
         expected: ?[]const u8,
+        kind: ?OpenErrorKind = null,
     }{
         .{
             .name = "no error",
@@ -520,6 +554,7 @@ test "openMessageHandler" {
             .name = "permission denied",
             .haystack = "blah: permission denied",
             .expected = "permission denied",
+            .kind = .authentication,
         },
         .{
             .name = "unprotected private key file",
@@ -530,6 +565,7 @@ test "openMessageHandler" {
             .name = "too many auth failures",
             .haystack = "blah: Too many authentication failures",
             .expected = "too many authentication failures",
+            .kind = .authentication,
         },
         .{
             .name = "connection refused",
@@ -559,7 +595,8 @@ test "openMessageHandler" {
         if (case.expected == null) {
             try std.testing.expect(actual == null);
         } else {
-            try std.testing.expectEqualStrings(case.expected.?, actual.?);
+            try std.testing.expectEqualStrings(case.expected.?, actual.?.message);
+            try std.testing.expectEqual(case.kind, actual.?.kind);
         }
     }
 }

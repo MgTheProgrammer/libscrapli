@@ -22,6 +22,11 @@ pub const ScrapliError = error{
     Transport,
     Operation,
 
+    // for when the remote end rejects our credentials, regardless of transport -- that is ssh2
+    // exhausting all of its auth methods, or bin/telnet (in session auth) seeing permission
+    // denied messages or being prompted repeatedly for credentials
+    Authentication,
+
     // for bounds checking (packed ffi args and the like)
     IndexError,
 

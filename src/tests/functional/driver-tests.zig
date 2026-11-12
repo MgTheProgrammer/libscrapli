@@ -21,6 +21,8 @@ fn getDriver(
     username: ?[]const u8,
     key: ?[]const u8,
     passphrase: ?[]const u8,
+    password: ?[]const u8,
+    certificate: ?[]const u8,
 ) !*cli.Driver {
     // on darwin we'll be targetting localhost, on linux we'll target the ips exposed via clab/docker
     var host: []const u8 = "";
@@ -79,8 +81,9 @@ fn getDriver(
     if (key != null) {
         options.auth.private_key_path = key;
         options.auth.private_key_passphrase = passphrase;
+        options.auth.certificate_path = certificate;
     } else {
-        options.auth.password = "__lookup::login";
+        options.auth.password = password orelse "__lookup::login";
     }
 
     switch (transport_kind) {
@@ -207,6 +210,8 @@ test "driver open" {
             case.username,
             case.key,
             case.passphrase,
+            null,
+            null,
         );
         d.definition.on_open_callback = case.onOpenCallback;
 
@@ -234,6 +239,72 @@ test "driver open" {
             case.name,
             golden_filename,
             actual,
+        );
+    }
+}
+
+test "driver open-authentication-failure" {
+    const cases = [_]struct {
+        name: []const u8,
+        transport_kind: transport.Kind,
+        platform: []const u8,
+        password: ?[]const u8 = null,
+        key: ?[]const u8 = null,
+        certificate: ?[]const u8 = null,
+    }{
+        // no telnet case for srl since it has no telnet server
+        .{
+            .name = "bad-password",
+            .transport_kind = transport.Kind.bin,
+            .platform = "nokia-srlinux",
+            .password = "not-the-password",
+        },
+        .{
+            .name = "bad-password",
+            .transport_kind = transport.Kind.ssh2,
+            .platform = "nokia-srlinux",
+            .password = "not-the-password",
+        },
+        // the certificate is signed by a ca the device doesnt trust (see fixtures readme), and
+        // the "admin" user has no authorized key, so key/certificate auth is rejected
+        .{
+            .name = "untrusted-certificate",
+            .transport_kind = transport.Kind.bin,
+            .platform = "nokia-srlinux",
+            .key = "src/tests/fixtures/libscrapli_test_ssh_key",
+            .certificate = "src/tests/fixtures/libscrapli_test_ssh_key-cert.pub",
+        },
+        .{
+            .name = "untrusted-certificate",
+            .transport_kind = transport.Kind.ssh2,
+            .platform = "nokia-srlinux",
+            .key = "src/tests/fixtures/libscrapli_test_ssh_key",
+            .certificate = "src/tests/fixtures/libscrapli_test_ssh_key-cert.pub",
+        },
+    };
+
+    for (cases) |case| {
+        errdefer {
+            std.debug.print(
+                "failed case: {s}-{s}-{s}\n",
+                .{ case.name, case.platform, case.transport_kind.toString() },
+            );
+        }
+
+        var d = try getDriver(
+            case.transport_kind,
+            case.platform,
+            "admin",
+            case.key,
+            null,
+            case.password,
+            case.certificate,
+        );
+        defer d.deinit();
+
+        try std.testing.expectError(
+            scrapli.errors.ScrapliError.Authentication,
+            d.open(std.testing.allocator, .{}),
         );
     }
 }

@@ -698,7 +698,7 @@ pub const Session = struct {
                         if (error_message) |msg| {
                             self.last_error.setFmt(
                                 "session.Session authenticate: open failed, error: '{s}'",
-                                .{msg},
+                                .{msg.message},
                                 "session.Session authenticate: open failed, EOF",
                             );
 
@@ -707,7 +707,7 @@ pub const Session = struct {
                                 @src(),
                                 self.log,
                                 "session.Session authenticate: open failed, error: '{s}'",
-                                .{msg},
+                                .{msg.message},
                             );
                         }
 
@@ -762,16 +762,18 @@ pub const Session = struct {
             if (error_message) |msg| {
                 self.last_error.setFmt(
                     "session.Session authenticate: open failed, error: '{s}'",
-                    .{msg},
+                    .{msg.message},
                     "session.Session authenticate: error in stdout",
                 );
 
                 return errors.wrapCriticalError(
-                    errors.ScrapliError.Session,
+                    if (msg.kind) |kind| switch (kind) {
+                        .authentication => errors.ScrapliError.Authentication,
+                    } else errors.ScrapliError.Session,
                     @src(),
                     self.log,
                     "session.Session authenticate: open failed, error: '{s}'",
-                    .{msg},
+                    .{msg.message},
                 );
             }
 
@@ -798,7 +800,7 @@ pub const Session = struct {
                             self.last_error.set(last_error);
 
                             return errors.wrapCriticalError(
-                                errors.ScrapliError.Session,
+                                errors.ScrapliError.Authentication,
                                 @src(),
                                 self.log,
                                 last_error,
@@ -818,7 +820,7 @@ pub const Session = struct {
                         self.last_error.set(last_error);
 
                         return errors.wrapCriticalError(
-                            errors.ScrapliError.Session,
+                            errors.ScrapliError.Authentication,
                             @src(),
                             self.log,
                             last_error,
@@ -837,7 +839,7 @@ pub const Session = struct {
                             self.last_error.set(last_error);
 
                             return errors.wrapCriticalError(
-                                errors.ScrapliError.Session,
+                                errors.ScrapliError.Authentication,
                                 @src(),
                                 self.log,
                                 last_error,
@@ -876,7 +878,7 @@ pub const Session = struct {
                         self.last_error.set(last_error);
 
                         return errors.wrapCriticalError(
-                            errors.ScrapliError.Session,
+                            errors.ScrapliError.Authentication,
                             @src(),
                             self.log,
                             last_error,
@@ -896,7 +898,7 @@ pub const Session = struct {
                             self.last_error.set(last_error);
 
                             return errors.wrapCriticalError(
-                                errors.ScrapliError.Session,
+                                errors.ScrapliError.Authentication,
                                 @src(),
                                 self.log,
                                 last_error,
@@ -933,7 +935,7 @@ pub const Session = struct {
                         self.last_error.set(last_error);
 
                         return errors.wrapCriticalError(
-                            errors.ScrapliError.Session,
+                            errors.ScrapliError.Authentication,
                             @src(),
                             self.log,
                             last_error,
