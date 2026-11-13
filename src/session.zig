@@ -703,7 +703,9 @@ pub const Session = struct {
                             );
 
                             return errors.wrapCriticalError(
-                                errors.ScrapliError.Transport,
+                                if (msg.kind) |kind| switch (kind) {
+                                    .authentication => errors.ScrapliError.Authentication,
+                                } else errors.ScrapliError.Transport,
                                 @src(),
                                 self.log,
                                 "session.Session authenticate: open failed, error: '{s}'",

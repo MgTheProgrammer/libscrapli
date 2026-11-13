@@ -14,6 +14,19 @@ const transport_waiter = @import("transport-waiter.zig");
 
 const default_eagain_delay_ns: u64 = 100_000;
 
+// whether a failed libssh2 userauth return code means the server rejected the credentials, as
+// opposed to the session failing underneath us (disconnect, socket error, etc.)
+fn isCredentialRejection(rc: c_int) bool {
+    return switch (rc) {
+        ssh2.LIBSSH2_ERROR_AUTHENTICATION_FAILED,
+        ssh2.LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED,
+        ssh2.LIBSSH2_ERROR_PASSWORD_EXPIRED,
+        ssh2.LIBSSH2_ERROR_METHOD_NONE,
+        => true,
+        else => false,
+    };
+}
+
 // max timeout for writing on the proxy jump case; this means *fully stalled* so just a slow server
 // that responds slowly but consistently w/in the timeout isnt going to trip this. think this
 // case really only happened w/ srl in a test (`test "driver-netconf proxy-jump large rpc"`).
@@ -1160,15 +1173,16 @@ pub const Transport = struct {
         }
 
         if (auth_options.username != null and auth_options.password != null) {
-            // zlint-disable suppressed-errors -- because we try w/ other methods after this
             self.handlePasswordAuth(
                 cancel,
                 start_time,
                 operation_timeout_ns,
                 session,
                 auth_options,
-            ) catch {
-                // in the future we could/should check auth list before doing this
+            ) catch |err| switch (err) {
+                // credentials rejected, fall through to keyboard interactive
+                errors.ScrapliError.Authentication => {},
+                else => return err,
             };
 
             if (try self.isAuthenticated(
@@ -1180,14 +1194,17 @@ pub const Transport = struct {
                 return;
             }
 
-            // zlint-disable suppressed-errors -- failure falls through to the auth error below
             self.handleKeyboardInteractiveAuth(
                 cancel,
                 start_time,
                 operation_timeout_ns,
                 session,
                 auth_options,
-            ) catch {};
+            ) catch |err| switch (err) {
+                // credentials rejected, fall through to the auth error below
+                errors.ScrapliError.Authentication => {},
+                else => return err,
+            };
 
             if (try self.isAuthenticated(
                 cancel,
@@ -1591,13 +1608,28 @@ pub const Transport = struct {
                 continue;
             }
 
-            self.log.info(
-                "ssh2.Transport handleKeyboardInteractiveAuth: failed keyboard " ++
-                    "interactive authentication, error code {d}",
+            if (isCredentialRejection(rc)) {
+                self.log.info(
+                    "ssh2.Transport handleKeyboardInteractiveAuth: failed keyboard " ++
+                        "interactive authentication, error code {d}",
+                    .{rc},
+                );
+
+                return errors.ScrapliError.Authentication;
+            }
+
+            const last_error = "ssh2.Transport handleKeyboardInteractiveAuth: keyboard " ++
+                "interactive authentication failed with a non authentication error";
+
+            self.last_error.set(last_error);
+
+            return errors.wrapCriticalError(
+                errors.ScrapliError.Transport,
+                @src(),
+                self.log,
+                last_error ++ ", error code {d}",
                 .{rc},
             );
-
-            return errors.ScrapliError.Transport;
         }
     }
 
@@ -1672,13 +1704,28 @@ pub const Transport = struct {
                 continue;
             }
 
-            self.log.info(
-                "ssh2.Transport handlePasswordAuth: failed password authentication, " ++
-                    "error code {d}, will try keyboard interactive. ",
+            if (isCredentialRejection(rc)) {
+                self.log.info(
+                    "ssh2.Transport handlePasswordAuth: failed password authentication, " ++
+                        "error code {d}, will try keyboard interactive. ",
+                    .{rc},
+                );
+
+                return errors.ScrapliError.Authentication;
+            }
+
+            const last_error = "ssh2.Transport handlePasswordAuth: password authentication " ++
+                "failed with a non authentication error";
+
+            self.last_error.set(last_error);
+
+            return errors.wrapCriticalError(
+                errors.ScrapliError.Transport,
+                @src(),
+                self.log,
+                last_error ++ ", error code {d}",
                 .{rc},
             );
-
-            return errors.ScrapliError.Transport;
         }
     }
 
