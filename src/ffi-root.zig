@@ -8,6 +8,8 @@ const ffi_options = @import("ffi-options.zig");
 const ffi_root_cli = @import("ffi-root-cli.zig");
 const ffi_root_netconf = @import("ffi-root-netconf.zig");
 const session = @import("session.zig");
+const transport = @import("transport.zig");
+const transport_ssh2 = @import("transport-ssh2.zig");
 
 // zlinter-disable require_doc_comment
 pub export const _ls_force_include_root_cli = &ffi_root_cli.noop;
@@ -291,6 +293,54 @@ export fn ls_session_operation_timeout_ns(
     return @backingInt(ffi_common.FfiResult.success);
 }
 
+/// Copies the raw host key digest of the connected device for the given hash (see
+/// transport-ssh2.HostKeyHash: 1 md5, 2 sha1, 3 sha256) into buf, and the digest length into
+/// digest_n. The buf must be at least the digest length (32 bytes covers all hashes). Computed on
+/// demand from the session, so only available for the ssh2 transport while opened, otherwise
+/// returns the operation result.
+export fn ls_session_get_host_key_fingerprint(
+    d_ptr: *ffi_common.LsDriver,
+    hash: u8,
+    buf: *[]u8,
+    digest_n: *usize,
+) callconv(.c) u8 {
+    const h = std.enums.fromInt(transport_ssh2.HostKeyHash, hash) orelse {
+        return @backingInt(ffi_common.FfiResult.invalid_argument);
+    };
+
+    if (buf.*.len < h.digestLen()) {
+        return @backingInt(ffi_common.FfiResult.invalid_argument);
+    }
+
+    const d: *ffi_driver.FfiDriver = @ptrCast(@alignCast(d_ptr));
+
+    const s: *session.Session = switch (d.real_driver) {
+        .cli => |rd| &rd.session,
+        .netconf => |rd| &rd.session,
+    };
+
+    const maybe_digest = s.transport.getHostKeyFingerprint(h, buf.*) catch |err| {
+        // zlinter-disable-next-line no_swallow_error - returning status code for ffi ops
+        errors.wrapCriticalError(
+            errors.ScrapliError.Operation,
+            @src(),
+            d.getLogger(),
+            "ffi: error during get host key fingerprint {any}",
+            .{err},
+        ) catch {};
+
+        return ffi_common.toFfiResult(err);
+    };
+
+    const digest = maybe_digest orelse {
+        return @backingInt(ffi_common.FfiResult.operation);
+    };
+
+    digest_n.* = digest.len;
+
+    return @backingInt(ffi_common.FfiResult.success);
+}
+
 test "ffi: ls_cli_alloc null host" {
     const options = ls_alloc_driver_options().?;
     defer ls_free_driver_options(options);
@@ -317,4 +367,55 @@ test "ffi: ls_session_write_and_return null buf" {
     const result = ls_session_write_and_return(@ptrFromInt(0xDEADBEEF), null, false);
 
     try std.testing.expectEqual(@backingInt(ffi_common.FfiResult.invalid_argument), result);
+}
+
+test "ffi: ls_session_get_host_key_fingerprint invalid hash" {
+    var out: [transport_ssh2.max_host_key_digest_len]u8 = undefined;
+    var buf: []u8 = &out;
+    var n: usize = 0;
+
+    const result = ls_session_get_host_key_fingerprint(@ptrFromInt(0xDEADBEEF), 99, &buf, &n);
+
+    try std.testing.expectEqual(@backingInt(ffi_common.FfiResult.invalid_argument), result);
+}
+
+test "ffi: ls_session_get_host_key_fingerprint buf too small" {
+    var out: [16]u8 = undefined;
+    var buf: []u8 = &out;
+    var n: usize = 0;
+
+    const result = ls_session_get_host_key_fingerprint(
+        @ptrFromInt(0xDEADBEEF),
+        @backingInt(transport_ssh2.HostKeyHash.sha256),
+        &buf,
+        &n,
+    );
+
+    try std.testing.expectEqual(@backingInt(ffi_common.FfiResult.invalid_argument), result);
+}
+
+test "ffi: ls_session_get_host_key_fingerprint not available" {
+    const options = ls_alloc_driver_options().?;
+    defer ls_free_driver_options(options);
+
+    const o: *ffi_options.FFIOptions = @ptrCast(@alignCast(options));
+    o.transport_kind = @backingInt(transport.Kind.ssh2);
+
+    // ssh2 transport, but never opened, so there is no session to get the host key from
+    const driver = ls_netconf_alloc("localhost", options).?;
+    defer ls_shared_free(driver);
+
+    var out: [transport_ssh2.max_host_key_digest_len]u8 = undefined;
+    var buf: []u8 = &out;
+    var n: usize = 0;
+
+    const result = ls_session_get_host_key_fingerprint(
+        driver,
+        @backingInt(transport_ssh2.HostKeyHash.sha256),
+        &buf,
+        &n,
+    );
+
+    try std.testing.expectEqual(@backingInt(ffi_common.FfiResult.operation), result);
+    try std.testing.expectEqual(0, n);
 }

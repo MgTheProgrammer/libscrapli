@@ -187,6 +187,24 @@ pub const Transport = struct {
         }
     }
 
+    /// Copies the raw host key digest of the connected device for the given hash into `out` and
+    /// returns the written slice, or null if unavailable -- only the ssh2 transport has access to
+    /// the host key, and only while open.
+    pub fn getHostKeyFingerprint(
+        self: *Transport,
+        hash: transport_ssh2.HostKeyHash,
+        out: []u8,
+    ) !?[]u8 {
+        switch (self.implementation) {
+            Kind.ssh2 => {
+                return self.implementation.ssh2.getHostKeyFingerprint(hash, out);
+            },
+            else => {
+                return null;
+            },
+        }
+    }
+
     /// Unblocks the transport waiter to stop any in flight reads; used before closing the
     /// session to free up the session read loop.
     pub fn prepareClose(self: *Transport) !void {

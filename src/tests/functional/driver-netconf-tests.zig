@@ -396,6 +396,164 @@ test "driver-netconf proxy-jump large rpc" {
     try std.testing.expect(actual_res.result.len > 0);
 }
 
+const HostKeyFingerprints = struct {
+    bufs: [3][scrapli.transport_ssh2.max_host_key_digest_len]u8 = undefined,
+    lens: [3]usize = undefined,
+
+    const hashes = [_]scrapli.transport_ssh2.HostKeyHash{ .md5, .sha1, .sha256 };
+
+    fn capture(self: *HostKeyFingerprints, t: anytype) !void {
+        for (hashes, 0..) |hash, idx| {
+            const digest = try t.getHostKeyFingerprint(hash, &self.bufs[idx]) orelse {
+                return error.NoHostKeyFingerprint;
+            };
+
+            self.lens[idx] = digest.len;
+        }
+    }
+
+    fn get(self: *const HostKeyFingerprints, idx: usize) []const u8 {
+        return self.bufs[idx][0..self.lens[idx]];
+    }
+};
+
+fn netconfHostKeyFingerprints(
+    host: []const u8,
+    port: u16,
+    username: []const u8,
+    password: []const u8,
+    proxy_jump_options: ?scrapli.transport_ssh2.ProxyJumpOptions,
+) !HostKeyFingerprints {
+    var d = try netconf.Driver.init(
+        std.testing.allocator,
+        std.testing.io,
+        host,
+        .{
+            .port = port,
+            .auth = .{
+                .username = username,
+                .password = password,
+            },
+            .transport = .{
+                .ssh2 = .{
+                    .proxy_jump_options = proxy_jump_options,
+                },
+            },
+        },
+    );
+    defer d.deinit();
+
+    const open_res = try d.open(std.testing.allocator, .{});
+    open_res.deinit();
+
+    var out: HostKeyFingerprints = .{};
+    try out.capture(&d.session.transport);
+
+    const close_ret = try d.close(std.testing.allocator, .{});
+    close_ret.deinit();
+
+    // fetched on demand from the session, so once closed there is nothing to fetch
+    var after_close: [scrapli.transport_ssh2.max_host_key_digest_len]u8 = undefined;
+    try std.testing.expect(
+        try d.session.transport.getHostKeyFingerprint(.sha256, &after_close) == null,
+    );
+
+    return out;
+}
+
+fn ssh2HostKeyFingerprints(
+    host: []const u8,
+    port: u16,
+    username: []const u8,
+    password: []const u8,
+) !HostKeyFingerprints {
+    var t = try scrapli.transport_ssh2.Transport.init(
+        std.testing.allocator,
+        std.testing.io,
+        .{ .allocator = std.testing.allocator },
+        .{},
+    );
+    defer t.deinit();
+
+    const auth_options = try scrapli.auth.Options.init(
+        std.testing.allocator,
+        .{
+            .username = username,
+            .password = password,
+        },
+    );
+    defer auth_options.deinit(std.testing.allocator);
+
+    try t.open(
+        null,
+        std.Io.Timestamp.now(std.testing.io, .awake),
+        std.time.ns_per_min,
+        host,
+        port,
+        auth_options,
+    );
+    defer t.close();
+
+    var out: HostKeyFingerprints = .{};
+    try out.capture(&t);
+
+    return out;
+}
+
+test "driver-netconf host key fingerprint proxy-jump" {
+    // fingerprints come from the images (and so can change w/ them), so rather than golden
+    // values assert the length, and that proxy jumping reports the target not the jump host
+    var target_host: []const u8 = "172.20.20.18";
+    var target_port: u16 = 830;
+    var jump_host: []const u8 = "172.20.20.19";
+    var jump_port: u16 = 22;
+
+    if (os == .macos) {
+        target_host = "localhost";
+        target_port = 23830;
+        jump_host = "localhost";
+        jump_port = 24022;
+    }
+
+    const direct = try netconfHostKeyFingerprints(
+        target_host,
+        target_port,
+        "root",
+        "password",
+        null,
+    );
+
+    const proxied = try netconfHostKeyFingerprints(
+        jump_host,
+        jump_port,
+        "scrapli-pw",
+        "scrapli-123-pw",
+        .{
+            // always the clab address since this is resolved from the jump host
+            .host = "172.20.20.18",
+            .port = 830,
+            .username = "root",
+            .password = "password",
+        },
+    );
+
+    // the jump host isnt a netconf server, so just open a plain ssh2 transport to it
+    const jump = try ssh2HostKeyFingerprints(
+        jump_host,
+        jump_port,
+        "scrapli-pw",
+        "scrapli-123-pw",
+    );
+
+    for (HostKeyFingerprints.hashes, 0..) |hash, idx| {
+        const direct_fp = direct.get(idx);
+
+        try std.testing.expectEqual(hash.digestLen(), direct_fp.len);
+        try std.testing.expectEqualStrings(direct_fp, proxied.get(idx));
+        try std.testing.expect(!std.mem.eql(u8, direct_fp, jump.get(idx)));
+    }
+}
+
 // edit config
 
 // copy config

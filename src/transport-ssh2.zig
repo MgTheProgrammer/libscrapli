@@ -547,6 +547,26 @@ pub const ProxyJumpOptions = struct {
     }
 };
 
+/// The hash algorithm used to produce a host key fingerprint. Values match the libssh2
+/// LIBSSH2_HOSTKEY_HASH_* constants.
+pub const HostKeyHash = enum(u8) {
+    md5 = ssh2.LIBSSH2_HOSTKEY_HASH_MD5,
+    sha1 = ssh2.LIBSSH2_HOSTKEY_HASH_SHA1,
+    sha256 = ssh2.LIBSSH2_HOSTKEY_HASH_SHA256,
+
+    /// Returns the length of the raw digest for this hash.
+    pub fn digestLen(self: HostKeyHash) usize {
+        return switch (self) {
+            .md5 => 16,
+            .sha1 => 20,
+            .sha256 => 32,
+        };
+    }
+};
+
+/// The longest possible host key digest (sha256).
+pub const max_host_key_digest_len = 32;
+
 /// Holds ssh2 transport options.
 pub const Options = struct {
     known_hosts_path: ?[]const u8 = null,
@@ -681,6 +701,31 @@ pub const Transport = struct {
     /// Returns the last error message recorded by this transport (empty if none).
     pub fn getLastError(self: *Transport) []const u8 {
         return self.last_error.get();
+    }
+
+    /// Copies the raw host key digest of the target device (the proxy-jump-d host if proxy
+    /// jumping) for the given hash into `out` and returns the written slice, or null if the
+    /// transport is not open. `out` must be at least `hash.digestLen()` long.
+    pub fn getHostKeyFingerprint(self: *Transport, hash: HostKeyHash, out: []u8) !?[]u8 {
+        // libssh2 holds the digests from the handshake in the session, this is just a copy, but
+        // take the lock so we dont race a close freeing the session (or a rekey updating them)
+        try self.session_lock.lock(self.io);
+        defer self.session_lock.unlock(self.io);
+
+        const session = if (self.options.proxy_jump_options == null)
+            self.initial_session
+        else
+            self.proxy_session;
+
+        const digest = ssh2.libssh2_hostkey_hash(session orelse return null, @backingInt(hash));
+        if (digest == null) {
+            return null;
+        }
+
+        const len = hash.digestLen();
+        @memcpy(out[0..len], digest[0..len]);
+
+        return out[0..len];
     }
 
     /// Opens the transport object.
@@ -2568,4 +2613,17 @@ test "optionsInitAllocationFailures" {
         optionsInitForAllocFailures,
         .{},
     );
+}
+
+test "getHostKeyFingerprint not opened" {
+    var t = try Transport.init(
+        std.testing.allocator,
+        std.testing.io,
+        logging.Logger{ .allocator = std.testing.allocator },
+        .{},
+    );
+    defer t.deinit();
+
+    var out: [max_host_key_digest_len]u8 = undefined;
+    try std.testing.expect(try t.getHostKeyFingerprint(.sha256, &out) == null);
 }
